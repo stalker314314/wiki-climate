@@ -112,8 +112,8 @@ def process_city(db: Database, index: int, total: int, city: dict):
                  'population': int(city['population']['value']),
                  'country': city['countryLabel']['value'],
                  'city_wd': city['city']['value'],
-                 'gps_lat': float(re.search(r'Point\((.*)\s', gps).group(1)),
-                 'gps_lon': float(re.search(r'\s(.*)\)', gps).group(1))}
+                 'gps_lon': float(re.search(r'Point\((.*)\s', gps).group(1)),
+                 'gps_lat': float(re.search(r'\s(.*)\)', gps).group(1))}
 
     weather_box = get_weather_box(index, total, city)
     # If we cannot find proper one, just insert basic one and we are done
@@ -131,6 +131,8 @@ def process_city(db: Database, index: int, total: int, city: dict):
                                              replace('−', '-').
                                              replace('&minus;', '-').
                                              replace('trace', '0').
+                                             replace('Trace', '0').
+                                             replace('T', '0').
                                              replace('—', '-'))
                 except ValueError:
                     print('Unable to convert value {} to float'.format(weather_box[key]))
@@ -144,8 +146,9 @@ def process_city(db: Database, index: int, total: int, city: dict):
 
     # Remove all data that are not floats
     for param in ['high C', 'high F', 'mean C', 'mean F', 'low C', 'low F',
-                  'humidity', 'sun', 'precipitation days', 'precipitation mm', 'precipitation inch',
-                  'record high C', 'record high F', 'record low C', 'record low F']:
+                  'humidity', 'sun', 'snow inch', 'precipitation days', 'precipitation mm', 'precipitation inch',
+                  'record high C', 'record high F', 'record low C', 'record low F',
+                  'avg record low C', 'avg record low F', 'avg record high C', 'avg record high F']:
         if '{} {}'.format(MONTHS[0], param) not in weather_box:
             continue
         all_are_floats = all(type(weather_box['{} {}'.format(m, param)]) == float for m in MONTHS)
@@ -155,15 +158,19 @@ def process_city(db: Database, index: int, total: int, city: dict):
 
     # Convert imperial stuff
     for param, convert_function in {'high F': f2c, 'mean F': f2c, 'low F': f2c, 'record high F': f2c,
-                                    'record low F': f2c, 'precipitation inch': i2mm}.items():
+                                    'avg record low F': f2c, 'avg record high F': f2c,
+                                    'record low F': f2c, 'precipitation inch': i2mm, 'snow inch': i2mm}.items():
         if '{} {}'.format(MONTHS[0], param) not in weather_box:
             continue
         for m in MONTHS:
-            converted = convert_function(weather_box['{} {}'.format(m, param)])
-            weather_box['{} {}'.format(m, param)] = round(converted, 1)
+            key = '{} {}'.format(m, param)
+            converted = convert_function(weather_box[key])
+            weather_box[key] = round(converted, 1)
+            weather_box[key.replace(' F', ' C').replace(' inch', ' mm')] = weather_box.pop(key)
 
     # Do additional aggregation per year
     for param, agg_function in {'high C': month_avg, 'mean C': month_avg, 'low C': month_avg,
+                                'avg record low C': month_avg, 'avg record high C': month_avg,
                                 'humidity': month_avg, 'sun': sum, 'precipitation days': sum, 'precipitation mm': sum,
                                 'record high C': max, 'record low C': min}.items():
         if '{} {}'.format(MONTHS[0], param) not in weather_box:
@@ -177,6 +184,23 @@ def process_city(db: Database, index: int, total: int, city: dict):
             continue
         agg_value = pstdev([weather_box['{} {}'.format(m, param)] for m in MONTHS])
         weather_box['year {} stdev'.format(param)] = round(agg_value, 1)
+
+    # Remove all keys not in "allowed set"
+    for key in list(weather_box.keys()):
+        if key == 'location':
+            continue
+        if key.startswith('source'):
+            continue
+        if key in basic_box.keys():
+            continue
+        if key.startswith('year ') and not (key.endswith(' F') or key.endswith(' inch')):
+            # Allow all year aggregates if they are in metric system
+            continue
+        if any((m for m in MONTHS if key.startswith(m))) and not (key.endswith(' F') or key.endswith(' inch')):
+            # Allow all month values if they are in metric system
+            continue
+        del weather_box[key]
+
     db.cities.insert_one(weather_box)
 
 
